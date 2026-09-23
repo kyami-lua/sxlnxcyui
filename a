@@ -1,5 +1,5 @@
 --==============================================================================
---  UGLY HUB  |  AZURA UI  v4.0.0  "ULTRAVIOLET"          by sxlnxcy
+--  UGLY HUB  |  AZURA UI  v4.0.1  "ULTRAVIOLET"          by sxlnxcy
 --
 --  Arsenal DNA, rebuilt as an engine:
 --    * LIVE THEMING  - 6 base themes + 10 accents, repainted instantly
@@ -16,8 +16,8 @@
 --==============================================================================
 
 local Azura = {}
-Azura.Version = "4.0.0"
-Azura.Build = "ultraviolet"
+Azura.Version = "4.0.1"
+Azura.Build = "ultraviolet-fix1"
 
 local TS  = game:GetService("TweenService")
 local UIS = game:GetService("UserInputService")
@@ -484,7 +484,13 @@ local function makeTooltip(scr, T)
     local Tooltip = {}
     function Tooltip:Show(text, anchorX, anchorY)
         lbl.Text = text
-        tip.Size = UDim2.fromOffset(math.min(280, #text * 5.4 + 18), 22)
+        local w = math.min(280, #text * 5.4 + 18)
+        local vp = CAM and CAM.ViewportSize or nil
+        local vw = (vp and vp.X and vp.X > 0) and vp.X or 1280
+        local vh = (vp and vp.Y and vp.Y > 0) and vp.Y or 720
+        anchorX = math.clamp(anchorX, 8, math.max(8, vw - w - 8))
+        anchorY = math.clamp(anchorY, 8, math.max(8, vh - 30))
+        tip.Size = UDim2.fromOffset(w, 22)
         tip.Position = UDim2.fromOffset(anchorX, anchorY)
         if not shown then
             shown = true
@@ -520,15 +526,34 @@ end
 
 --============================== NOTIFICATIONS =================================
 local notifHolder
+local notifActive = {}
+local notifKills = {}
+local MAX_TOASTS = 4
+
+local function viewportWidth()
+    local vp = CAM and CAM.ViewportSize or nil
+    if vp and vp.X and vp.X > 0 then return vp.X end
+    return 1280
+end
+
+-- never wider than the screen: a fixed 300px toast on a small viewport used to get cut off
+local function notifWidth()
+    return math.clamp(viewportWidth() - 24, 200, 300)
+end
+
 local function getNotifHolder()
-    if notifHolder and notifHolder.Parent then return notifHolder end
+    local w = notifWidth()
+    if notifHolder and notifHolder.Parent then
+        notifHolder.Size = UDim2.new(0, w, 1, -24)
+        return notifHolder
+    end
     local scr = new("ScreenGui", {
         Name = "UglyHubNotifications", ResetOnSpawn = false, IgnoreGuiInset = true,
         ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999999,
     }, safeParent())
     local holder = new("Frame", {
-        Name = "Holder", Size = UDim2.new(0, 300, 1, -24), Position = UDim2.new(1, -312, 0, 12),
-        BackgroundTransparency = 1,
+        Name = "Holder", Size = UDim2.new(0, w, 1, -24), Position = UDim2.new(1, -12, 0, 12),
+        AnchorPoint = Vector2.new(1, 0), BackgroundTransparency = 1,
     }, scr)
     vlist(holder, 8)
     notifHolder = holder
@@ -545,12 +570,11 @@ function Azura:Notify(cfg)
     cfg = cfg or {}
     local T = cfg.Theme or Azura._theme or buildPalette("Dark", "Red")
     local holder = getNotifHolder()
-    local W = 300
+    local W = notifWidth()
 
     local card = new("Frame", {
-        Size = UDim2.new(0, W, 0, 0), BackgroundColor3 = T.SURFACE,
-        BackgroundTransparency = T.ALPHA, BorderSizePixel = 0, ClipsDescendants = true,
-        Position = UDim2.new(0, 60, 0, 0),
+        Name = "Toast", Size = UDim2.new(1, 0, 0, 0), BackgroundColor3 = T.SURFACE,
+        BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true,
     }, holder)
     corner(card, 8)
     local cardStroke = stroke(card, T.ACCENT_DIM, 1, 0.35)
@@ -620,25 +644,51 @@ function Azura:Notify(cfg)
     local listH = count > 0 and 28 or 0
 
     local targetH = 28
-    local function applyHeight()
-        tw(card, {Size = UDim2.new(0, W, 0, targetH), Position = UDim2.new(0, 0, 0, 0)}, 0.32, Enum.EasingStyle.Quart)
+    local labels = {}
+    for _, d in ipairs(card:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") then
+            d.TextTransparency = 1
+            table.insert(labels, d)
+        end
     end
     task.defer(function()
         local h = math.clamp(28 + body.TextBounds.Y + 12 + listH, 58, 200)
         targetH = h
-        applyHeight()
+        if perf then
+            card.Size = UDim2.new(1, 0, 0, h)
+            card.BackgroundTransparency = T.ALPHA
+            for _, l in ipairs(labels) do l.TextTransparency = 0 end
+        else
+            tw(card, {Size = UDim2.new(1, 0, 0, h), BackgroundTransparency = T.ALPHA}, 0.3, Enum.EasingStyle.Quart)
+            for _, l in ipairs(labels) do tw(l, {TextTransparency = 0}, 0.24) end
+        end
     end)
 
     local dead = false
     local function kill()
         if dead then return end
         dead = true
-        for _, d in ipairs(card:GetDescendants()) do
-            if d:IsA("TextLabel") then tw(d, {TextTransparency = 1}, 0.16) end
-            if d:IsA("Frame") or d:IsA("TextButton") then tw(d, {BackgroundTransparency = 1}, 0.16) end
+        notifKills[card] = nil
+        for i, c in ipairs(notifActive) do
+            if c == card then
+                table.remove(notifActive, i)
+                break
+            end
         end
-        tw(card, {Position = UDim2.new(0, 60, 0, 0)}, 0.2, Enum.EasingStyle.Quart)
+        for _, d in ipairs(card:GetDescendants()) do
+            if d:IsA("TextLabel") or d:IsA("TextButton") then tw(d, {TextTransparency = 1}, 0.14) end
+            if d:IsA("Frame") then tw(d, {BackgroundTransparency = 1}, 0.14) end
+        end
+        -- collapse the card instead of sliding it: the list layout closes the gap
+        tw(card, {Size = UDim2.new(1, 0, 0, 0), BackgroundTransparency = 1}, 0.2, Enum.EasingStyle.Quart)
             .Completed:Connect(function() card:Destroy() end)
+    end
+    notifKills[card] = kill
+    table.insert(notifActive, card)
+    while #notifActive > MAX_TOASTS do
+        local oldest = table.remove(notifActive, 1)
+        local fn = oldest and notifKills[oldest]
+        if fn then pcall(fn) elseif oldest then pcall(function() oldest:Destroy() end) end
     end
 
     if cfg.Duration == 0 or cfg.Sticky then
@@ -679,49 +729,63 @@ end
 
 --============================= CUSTOM SCROLLBAR ===============================
 -- returns bar, update(), repaint(T)
-local function attachScrollbar(page, T)
+local function pageWindowHeight(page)
+    local wh = 0
+    pcall(function() wh = page.AbsoluteWindowSize.Y end)
+    if not wh or wh <= 0 then pcall(function() wh = page.AbsoluteSize.Y end) end
+    if not wh or wh <= 0 then wh = 400 end
+    return wh
+end
+
+local function attachScrollbar(page, T, track)
+    local function on(sig, fn)
+        local c = sig:Connect(fn)
+        if track then track(c) end
+        return c
+    end
     local bar = new("TextButton", {
-        Size = UDim2.new(0, 5, 0, 0), Position = UDim2.new(1, -7, 0, 4),
-        BackgroundColor3 = T.ACCENT, BackgroundTransparency = 0.15, BorderSizePixel = 0,
+        Size = UDim2.new(0, 6, 0, 0), Position = UDim2.new(1, -8, 0, 4),
+        BackgroundColor3 = T.ACCENT, BackgroundTransparency = 0.1, BorderSizePixel = 0,
         Text = "", AutoButtonColor = false, Visible = false, ZIndex = 20,
     }, page)
     corner(bar, 3)
 
     local dragging, dragStart, canvasStart = false, 0, 0
-    bar.InputBegan:Connect(function(input)
+    on(bar.InputBegan, function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = true
             dragStart = UIS:GetMouseLocation().Y
             canvasStart = page.CanvasPosition.Y
         end
     end)
-    UIS.InputChanged:Connect(function(input)
+    on(UIS.InputChanged, function(input)
         if not dragging or input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
-        local ch, wh = page.CanvasSize.Y.Offset, page.AbsoluteWindowSize.Y
+        if not page.Parent then return end
+        local ch, wh = page.CanvasSize.Y.Offset, pageWindowHeight(page)
         if ch <= wh then return end
         local sbH = math.max((wh / ch) * wh, 22)
         local delta = UIS:GetMouseLocation().Y - dragStart
         local canvasDelta = delta / math.max(1, (wh - sbH)) * (ch - wh)
         page.CanvasPosition = Vector2.new(0, math.clamp(canvasStart + canvasDelta, 0, ch - wh))
     end)
-    UIS.InputEnded:Connect(function(input)
+    on(UIS.InputEnded, function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
     end)
-    bar.MouseEnter:Connect(function() bar.Size = UDim2.new(0, 8, 0, bar.Size.Y.Offset) end)
-    bar.MouseLeave:Connect(function() bar.Size = UDim2.new(0, 5, 0, bar.Size.Y.Offset) end)
+    bar.MouseEnter:Connect(function() bar.Size = UDim2.new(0, 9, 0, bar.Size.Y.Offset) end)
+    bar.MouseLeave:Connect(function() bar.Size = UDim2.new(0, 6, 0, bar.Size.Y.Offset) end)
 
     local function update()
         if not page.Parent then return end
-        local ch, wh = page.CanvasSize.Y.Offset, page.AbsoluteWindowSize.Y
+        local ch, wh = page.CanvasSize.Y.Offset, pageWindowHeight(page)
         if ch <= wh then
             bar.Visible = false
             return
         end
         bar.Visible = true
-        local sbH = math.max((wh / ch) * wh, 22)
-        local sbY = (page.CanvasPosition.Y / (ch - wh)) * (wh - sbH)
+        local sbH = math.max((wh / ch) * wh, 26)
+        local sbY = (page.CanvasPosition.Y / math.max(1, ch - wh)) * (wh - sbH)
         bar.Size = UDim2.new(0, bar.Size.X.Offset, 0, sbH)
-        bar.Position = UDim2.new(1, -7, 0, sbY + 4)
+        bar.Position = UDim2.new(1, -8, 0, sbY + 4)
     end
 
     local function repaint(T2) bar.BackgroundColor3 = T2.ACCENT end
@@ -740,6 +804,15 @@ function Azura:CreateWindow(cfg)
     local height   = (cfg.Size and cfg.Size.Y and cfg.Size.Y.Offset) or 470
     local HEADER, SIDEBAR = 40, 132
     local menuKey  = cfg.MenuKey or "RightShift"
+
+    -- never build a window bigger than the screen it has to live on
+    do
+        local vp = CAM and CAM.ViewportSize or nil
+        if vp and vp.X and vp.X > 0 and vp.Y and vp.Y > 0 then
+            width = math.min(width, math.max(360, vp.X - 24))
+            height = math.min(height, math.max(280, vp.Y - 24))
+        end
+    end
 
     --=========================== CONNECTION TRACKING ====================
     local conns = {}
@@ -815,7 +888,7 @@ function Azura:CreateWindow(cfg)
     })
 
     local titleHolder = new("Frame", {
-        Size = UDim2.new(1, -190, 1, 0), Position = UDim2.new(0, 12, 0, 0),
+        Size = UDim2.new(1, -204, 1, 0), Position = UDim2.new(0, 12, 0, 0),
         BackgroundTransparency = 1, ZIndex = 4,
     }, header)
     local titleChars
@@ -823,7 +896,7 @@ function Azura:CreateWindow(cfg)
     titleHolder.Position = UDim2.new(0, 0, 0.5, -11)
 
     local subLbl = new("TextLabel", {
-        Size = UDim2.new(1, -190, 0, 10), Position = UDim2.new(0, 13, 0, 27),
+        Size = UDim2.new(1, -204, 0, 10), Position = UDim2.new(0, 13, 0, 27),
         BackgroundTransparency = 1, Text = subtitle, TextColor3 = T.TEXT_MUTED, TextSize = 9,
         Font = Enum.Font.Gotham, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4,
     }, header)
@@ -831,6 +904,7 @@ function Azura:CreateWindow(cfg)
     local function chip(text, w, xOff, y)
         local c = new("Frame", {
             Size = UDim2.new(0, w, 0, 16), Position = UDim2.new(1, xOff, 0, y or 12),
+            AnchorPoint = Vector2.new(1, 0),   -- right edge at (width + xOff): never clipped
             BackgroundColor3 = T.SURFACE, BackgroundTransparency = 0.2 + T.ALPHA, BorderSizePixel = 0, ZIndex = 4,
         }, header)
         corner(c, 4)
@@ -841,12 +915,13 @@ function Azura:CreateWindow(cfg)
         return c, l
     end
 
-    local keyChip, keyChipLbl = chip(string.upper(menuKey), 56, -136, 12)
-    local clockChip, clockChipLbl = chip("--:--", 42, -186, 12)
+    local keyChip, keyChipLbl = chip(string.upper(menuKey), 56, -88, 12)
+    local clockChip, clockChipLbl = chip("--:--", 42, -150, 12)
 
     local function winButton(glyph, xOff, hoverColor)
         local b = new("TextButton", {
             Size = UDim2.fromOffset(22, 22), Position = UDim2.new(1, xOff, 0, 9),
+            AnchorPoint = Vector2.new(1, 0),
             BackgroundColor3 = T.SURFACE, BackgroundTransparency = 0.2 + T.ALPHA, BorderSizePixel = 0,
             Text = "", AutoButtonColor = false, ZIndex = 4,
         }, header)
@@ -913,9 +988,14 @@ function Azura:CreateWindow(cfg)
 
     -- footer: ping + fps sparkline
     local pingLbl = new("TextLabel", {
-        Size = UDim2.new(1, -12, 0, 12), Position = UDim2.new(0, 6, 1, -60), BackgroundTransparency = 1,
-        Text = "PING --", TextColor3 = T.TEXT_MUTED, TextSize = 9, Font = Enum.Font.GothamBold,
+        Size = UDim2.new(0, 60, 0, 12), Position = UDim2.new(0, 6, 1, -60), BackgroundTransparency = 1,
+        Text = "PING", TextColor3 = T.TEXT_MUTED, TextSize = 9, Font = Enum.Font.GothamBold,
         TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 4,
+    }, sidebar)
+    local pingValue = new("TextLabel", {
+        Size = UDim2.new(0, 60, 0, 12), Position = UDim2.new(1, -66, 1, -60), BackgroundTransparency = 1,
+        Text = "--", TextColor3 = T.TEXT_MUTED, TextSize = 9, Font = Enum.Font.GothamBold,
+        TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 4,
     }, sidebar)
     local fpsChip = new("Frame", {
         Size = UDim2.new(1, -6, 0, 34), Position = UDim2.new(0, 3, 1, -46),
@@ -965,6 +1045,7 @@ function Azura:CreateWindow(cfg)
             glow.Position = main.Position - UDim2.fromOffset(6, 6)
             shadow.Size = UDim2.new(0, main.Size.X.Offset + 4, 0, main.Size.Y.Offset + 5)
             shadow.Position = main.Position - UDim2.fromOffset(2, -1)
+            if syncHandles then syncHandles() end
         end
         sync()
         if time then
@@ -1018,12 +1099,14 @@ function Azura:CreateWindow(cfg)
         end
     end)
 
+    -- handles live in root: main clips its descendants, so children at the very
+    -- edge of the window were invisible before
     local resizeHandles = {}
-    local function resizeHandle(size, position, mode)
+    local function resizeHandle(name, size, ox, oy, mode)
         local h = new("TextButton", {
-            Size = size, Position = position, BackgroundColor3 = T.ACCENT_DEEP, BorderSizePixel = 0,
-            Text = "", AutoButtonColor = false, ZIndex = 10,
-        }, main)
+            Name = name, Size = size, BackgroundColor3 = T.ACCENT_DEEP, BorderSizePixel = 0,
+            Text = "", AutoButtonColor = false, ZIndex = 40, AnchorPoint = Vector2.new(0.5, 0.5),
+        }, root)
         corner(h, 2)
         on(h.InputBegan, function(input)
             if input.UserInputType == Enum.UserInputType.MouseButton1 then
@@ -1033,13 +1116,21 @@ function Azura:CreateWindow(cfg)
                 resizeFrom = main.AbsoluteSize
             end
         end)
-        table.insert(resizeHandles, h)
+        table.insert(resizeHandles, {handle = h, ox = ox, oy = oy, mode = mode})
         return h
     end
-    local rv = resizeHandle(UDim2.new(0, 3, 0, 26), UDim2.new(1, 3, 1, -30), "w")
-    local rh = resizeHandle(UDim2.new(0, 26, 0, 3), UDim2.new(1, -30, 1, 3), "h")
-    local rc = resizeHandle(UDim2.new(0, 10, 0, 10), UDim2.new(1, 6, 1, 6), "both")
+    local rv = resizeHandle("ResizeV", UDim2.new(0, 3, 0, 30), 4, -52, "w")
+    local rh = resizeHandle("ResizeH", UDim2.new(0, 30, 0, 3), -52, 4, "h")
+    local rc = resizeHandle("ResizeC", UDim2.new(0, 10, 0, 10), 6, 6, "both")
     corner(rc, 3)
+
+    local function syncHandles()
+        local ms, mp = main.Size, main.Position
+        for _, h in ipairs(resizeHandles) do
+            h.handle.Position = UDim2.new(mp.X.Scale, mp.X.Offset + ms.X.Offset + h.ox,
+                                          mp.Y.Scale, mp.Y.Offset + ms.Y.Offset + h.oy)
+        end
+    end
 
     --============================ WINDOW OBJECT =========================
     local Window = {}
@@ -1134,11 +1225,12 @@ function Azura:CreateWindow(cfg)
         if maxed then Window:Maximize(false) end
         state = (state == nil) and (main.Size.Y.Offset > HEADER) or state
         local ms = main.AbsoluteSize
+        local sc = (uiscale.Scale > 0) and uiscale.Scale or 1
         if state then
-            restoreHeight = ms.Y
-            applyGeom(UDim2.fromOffset(ms.X / uiscale.Scale, HEADER), main.Position, 0.2)
+            restoreHeight = ms.Y / sc
+            applyGeom(UDim2.fromOffset(ms.X / sc, HEADER), main.Position, 0.2)
         else
-            applyGeom(UDim2.fromOffset(ms.X / uiscale.Scale, restoreHeight), main.Position, 0.2)
+            applyGeom(UDim2.fromOffset(ms.X / sc, restoreHeight), main.Position, 0.2)
         end
     end
 
@@ -1181,6 +1273,16 @@ function Azura:CreateWindow(cfg)
     end
     function Window:SetVisible(s) setVisible(s) end
     function Window:Toggle() setVisible(not Window.Visible) end
+
+    -- v4.0.0 shipped these three buttons unconnected: clicking them did nothing
+    on(minBtn.MouseButton1Click, function() Window:Minimize() end)
+    on(maxBtn.MouseButton1Click, function() Window:Maximize() end)
+    on(closeBtn.MouseButton1Click, function()
+        for _, d in ipairs({glow, shadow}) do tw(d, {BackgroundTransparency = 1}, 0.12) end
+        tw(main, {Size = UDim2.new(0, main.Size.X.Offset, 0, 0), BackgroundTransparency = 1}, 0.18)
+            .Completed:Connect(function() Window:Destroy() end)
+    end)
+    Window.Buttons = {close = closeBtn, minimize = minBtn, maximize = maxBtn}
 
     --============================= CONTEXT MENU =========================
     local ctxMenu
@@ -1259,8 +1361,11 @@ function Azura:CreateWindow(cfg)
             BorderSizePixel = 0, ZIndex = 80,
         }, root)
         local cardScale = new("UIScale", {Scale = 0.94}, overlay)
+        local dlgW = 320
+        local vp = CAM and CAM.ViewportSize or nil
+        if vp and vp.X and vp.X > 0 then dlgW = math.min(320, math.max(220, vp.X - 32)) end
         local card = new("Frame", {
-            Size = UDim2.fromOffset(320, 150), Position = UDim2.new(0.5, -160, 0.5, -75),
+            Size = UDim2.fromOffset(dlgW, 150), Position = UDim2.new(0.5, -dlgW / 2, 0.5, -75),
             BackgroundColor3 = T.SURFACE, BackgroundTransparency = T.ALPHA, BorderSizePixel = 0, ZIndex = 81,
         }, overlay)
         corner(card, 9)
@@ -1291,7 +1396,7 @@ function Azura:CreateWindow(cfg)
             total = total + widths[i]
         end
         total = total + (#buttons - 1) * 8
-        local x = 320 - 16 - total
+        local x = dlgW - 16 - total
         for i, b in ipairs(buttons) do
             local btn = new("TextButton", {
                 Size = UDim2.fromOffset(widths[i], 28), Position = UDim2.fromOffset(x, 104),
@@ -1517,6 +1622,7 @@ function Azura:CreateWindow(cfg)
         fpsChip.BackgroundTransparency = dim
         fpsLbl.TextColor3 = T2.ACCENT
         pingLbl.TextColor3 = T2.TEXT_MUTED
+        pingValue.TextColor3 = T2.TEXT_MUTED
         for _, b in ipairs(sparkBars) do b.BackgroundColor3 = T2.ACCENT end
         keyChipLbl.TextColor3 = T2.TEXT_MUTED
         clockChipLbl.TextColor3 = T2.TEXT_MUTED
@@ -1528,6 +1634,7 @@ function Azura:CreateWindow(cfg)
     end)
 
     task.defer(function()
+        syncHandles()
         tw(glow, {BackgroundTransparency = 0.93}, 0.5)
         tw(shadow, {BackgroundTransparency = 0.55}, 0.5)
     end)
@@ -1541,12 +1648,12 @@ function Azura:CreateWindow(cfg)
     end)
     task.spawn(function()
         while not perf and scr.Parent do
-            local ping = "PING --"
+            local text = "--"
             pcall(function()
                 local p = PLR:GetNetworkPing()
-                if type(p) == "number" then ping = "PING " .. tostring(math.floor(p * 1000 + 0.5)) .. "ms" end
+                if type(p) == "number" and p > 0 then text = tostring(math.floor(p * 1000 + 0.5)) .. "ms" end
             end)
-            if pingLbl.Parent then pingLbl.Text = ping end
+            if pingValue.Parent then pingValue.Text = text end
             task.wait(2)
         end
     end)
@@ -1659,8 +1766,8 @@ function Azura:CreateWindow(cfg)
             Visible = false, ZIndex = 3,
         }, pageHolder)
         vlist(page, 6)
-        pad(page, 2, 8, 10, 0)
-        local _, scrollUpdate, scrollRepaint = attachScrollbar(page, T)
+        pad(page, 2, 8, 16, 0)
+        local _, scrollUpdate, scrollRepaint = attachScrollbar(page, T, track)
 
         local Tab = {}
         Tab.Button = btn
@@ -1728,7 +1835,7 @@ function Azura:CreateWindow(cfg)
                 badge.Visible = true
                 badgeLbl.Text = tostring(text)
                 badge.Size = UDim2.new(0, math.max(18, #tostring(text) * 6 + 12), 0, 14)
-                badge.Position = UDim2.new(1, -(math.max(18, #tostring(text) * 6 + 12) + 8), 0.5, 5)
+                badge.Position = UDim2.new(1, -(math.max(18, #tostring(text) * 6 + 12) + 8), 0.5, -7)
             end
         end
 
@@ -1789,9 +1896,10 @@ function Azura:CreateWindow(cfg)
             Section.Visible = true
 
             local body, header, chev, card
+            local headH = (tostring(secTitle) == "") and 9 or 32
             if grouped then
                 card = new("Frame", {
-                    Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = T.CARD,
+                    Size = UDim2.new(1, 0, 0, headH), BackgroundColor3 = T.CARD,
                     BackgroundTransparency = T.ALPHA, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = 3,
                 }, page)
                 corner(card, 7)
@@ -1799,7 +1907,7 @@ function Azura:CreateWindow(cfg)
                 Section.Frame = card
 
                 header = new("TextButton", {
-                    Size = UDim2.new(1, 0, 0, 32), BackgroundColor3 = T.CARD,
+                    Size = UDim2.new(1, 0, 0, headH), BackgroundColor3 = T.CARD,
                     BackgroundTransparency = T.ALPHA, BorderSizePixel = 0, Text = "",
                     AutoButtonColor = false, ZIndex = 5,
                 }, card)
@@ -1817,15 +1925,22 @@ function Azura:CreateWindow(cfg)
                 chev = makeChevron(header, 10, T.TEXT_MUTED)
                 chev.Position = UDim2.new(1, -16, 0.5, 0)
                 if not opened then chev.Rotation = -90 end
+                if headH < 32 then
+                    chev.Visible = false
+                    tick.Visible = false
+                    for _, d in ipairs(header:GetChildren()) do
+                        if d:IsA("TextLabel") then d.Visible = false end
+                    end
+                end
 
                 body = new("Frame", {
-                    Size = UDim2.new(1, 0, 0, 0), Position = UDim2.new(0, 0, 0, 32), BackgroundTransparency = 1,
+                    Size = UDim2.new(1, 0, 0, 0), Position = UDim2.new(0, 0, 0, headH), BackgroundTransparency = 1,
                     Visible = opened, ZIndex = 4,
                 }, card)
                 vlist(body, 0)
                 local count = 0
                 local function sizeCard()
-                    card.Size = UDim2.new(1, 0, 0, opened and (32 + body.UIListLayout.AbsoluteContentSize.Y) or 32)
+                    card.Size = UDim2.new(1, 0, 0, opened and (headH + body.UIListLayout.AbsoluteContentSize.Y) or headH)
                 end
                 on(body.UIListLayout:GetPropertyChangedSignal("AbsoluteContentSize"), sizeCard)
                 Section._sizeCard = sizeCard
@@ -1975,6 +2090,7 @@ function Azura:CreateWindow(cfg)
                 if not grouped then
                     hover(r, {BackgroundColor3 = T.CARD_HOVER}, {BackgroundColor3 = T.CARD})
                 end
+                attachTip(slot, meta and meta.tip, tooltip)
                 if entry.reset or entry.flag or entry.get then
                     on(slot.InputBegan, function(input)
                         if input.UserInputType == Enum.UserInputType.MouseButton2 then
@@ -2235,7 +2351,8 @@ function Azura:CreateWindow(cfg)
                 local x = iconSlot(r, cfg4.Icon)
                 rowLabel(r, cfg4.Title or "Dropdown", 11, x)
                 local valueLbl = new("TextLabel", {
-                    Size = UDim2.new(0, 110, 0, 12), Position = UDim2.new(1, -58, 0, 12), BackgroundTransparency = 1,
+                    Size = UDim2.new(0, 140, 0, 12), Position = UDim2.new(1, -22, 0, 12),
+                    AnchorPoint = Vector2.new(1, 0), BackgroundTransparency = 1,
                     Text = "", TextColor3 = T.ACCENT, TextSize = 10, Font = Enum.Font.GothamBold,
                     TextXAlignment = Enum.TextXAlignment.Right, TextTruncate = Enum.TextTruncate.AtEnd, ZIndex = 6,
                 }, r)
@@ -2713,7 +2830,8 @@ function Azura:CreateWindow(cfg)
                 local x = iconSlot(r, cfg4.Icon)
                 rowLabel(r, cfg4.Title or "Color", 11, x)
                 local hexLbl = new("TextLabel", {
-                    Size = UDim2.new(0, 62, 0, 12), Position = UDim2.new(1, -114, 0, 13), BackgroundTransparency = 1,
+                    Size = UDim2.new(0, 62, 0, 12), Position = UDim2.new(1, -64, 0, 13),
+                    AnchorPoint = Vector2.new(1, 0), BackgroundTransparency = 1,
                     Text = hex(color), TextColor3 = T.TEXT_MUTED, TextSize = 9, Font = Enum.Font.GothamBold,
                     TextXAlignment = Enum.TextXAlignment.Right, ZIndex = 6,
                 }, r)
@@ -3038,7 +3156,8 @@ function Azura:CreateWindow(cfg)
 
                 local function mkBtn(glyph, xOff)
                     local b = new("TextButton", {
-                        Size = UDim2.fromOffset(22, 22), Position = UDim2.new(1, xOff, 0.5, -11),
+                        Size = UDim2.fromOffset(22, 22), Position = UDim2.new(1, xOff, 0.5, 0),
+                        AnchorPoint = Vector2.new(1, 0.5),
                         BackgroundColor3 = T.PANEL, BackgroundTransparency = T.ALPHA, Text = "",
                         AutoButtonColor = false, BorderSizePixel = 0, ZIndex = 6,
                     }, r)
@@ -3048,10 +3167,11 @@ function Azura:CreateWindow(cfg)
                     hover(b, {BackgroundColor3 = T.CARD_HOVER}, {BackgroundColor3 = T.PANEL})
                     return b
                 end
-                local minus = mkBtn("minus", -102)
+                local minus = mkBtn("minus", -98)
                 local plus = mkBtn("plus", -12)
                 local box = new("TextBox", {
-                    Size = UDim2.fromOffset(52, 22), Position = UDim2.new(1, -78, 0.5, -11),
+                    Size = UDim2.fromOffset(52, 22), Position = UDim2.new(1, -40, 0.5, 0),
+                    AnchorPoint = Vector2.new(1, 0.5),
                     BackgroundColor3 = T.PANEL, BackgroundTransparency = T.ALPHA, Text = tostring(value),
                     TextColor3 = T.TEXT_PRI, TextSize = 10, Font = Enum.Font.GothamBold,
                     ClearTextOnFocus = false, BorderSizePixel = 0, ZIndex = 6,
@@ -3279,6 +3399,9 @@ function Azura:CreateWindow(cfg)
             function Section:Paragraph(cfg4)
                 cfg4 = cfg4 or {}
                 local desc = cfg4.Desc or ""
+                if desc == "" and (cfg4.Title or "") == "" then
+                    return new("Frame", {Size = UDim2.new(1, 0, 0, 8), BackgroundTransparency = 1}, page)
+                end
                 local lines = math.max(1, math.ceil(#desc / 40))
                 local hgt = (desc == "") and 34 or (24 + lines * 12)
 
@@ -3298,6 +3421,10 @@ function Azura:CreateWindow(cfg)
             end
 
             function Section:Label(text, desc)
+                local hasText = (text ~= nil and tostring(text) ~= "") or (desc ~= nil and tostring(desc) ~= "")
+                if not hasText then
+                    return new("Frame", {Size = UDim2.new(1, 0, 0, 8), BackgroundTransparency = 1}, page)
+                end
                 local r = buildRow(desc and 34 or 22, text or "")
                 local l = new("TextLabel", {
                     Size = UDim2.new(1, -20, 0, 12), Position = UDim2.new(0, 12, 0, 5), BackgroundTransparency = 1,
@@ -3327,6 +3454,10 @@ function Azura:CreateWindow(cfg)
                     BackgroundTransparency = 0.45, BorderSizePixel = 0, ZIndex = 4,
                 }, page)
                 R(function(T2) line.BackgroundColor3 = T2.BORDER end)
+                local entry = {row = line, title = "divider", search = "divider", section = Section, tab = Tab}
+                table.insert(entries, entry)
+                table.insert(Tab._entries, entry)
+                table.insert(Section.Rows, entry)
                 return line
             end
 
